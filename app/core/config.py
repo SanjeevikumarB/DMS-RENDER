@@ -12,4 +12,4 @@ CDN_DOMAIN = os.getenv("CDN_DOMAIN")
 AWS_REGION = os.getenv("AWS_REGION", "eu-north-1")
 
 # app/core/config.py
-DATABASE_URL = "mysql+mysqlconnector://root:2004@localhost/dms"
+DATABASE_URL = os.getenv("DATABASE_URL")

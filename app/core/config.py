@@ -9,7 +9,8 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 S3_UPLOAD_FOLDER = os.getenv("S3_UPLOAD_FOLDER", "uploads/")
 CDN_DOMAIN = os.getenv("CDN_DOMAIN")
-AWS_REGION = os.getenv("AWS_REGION", "eu-north-1")
+AWS_REGION = os.getenv("AWS_REGION")
 
 # app/core/config.py
 DATABASE_URL = os.getenv("DATABASE_URL")
+POSTGRES_DB_URL = os.getenv("POSTGRES_DB_URL")

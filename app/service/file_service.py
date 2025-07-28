@@ -6,19 +6,36 @@ from starlette.responses import StreamingResponse
 from botocore.exceptions import BotoCoreError, ClientError
 from botocore.config import Config
 import boto3
+import asyncio 
+from io import BytesIO
 
 from ..core.config import AWS_S3_BUCKET, S3_UPLOAD_FOLDER, CDN_DOMAIN
 from ..service.metadata_extractor.dispatcher import extract_metadata
 
-from app.db.db_utils import save_file_record_to_db, update_file_status
-from app.db.models import FileStatusEnum
-
+from app.db.db_utils import (
+    save_file_record_to_db, 
+    add_file_acl,
+    get_user_permission,
+    is_user_admin
+)
+from app.service.acl_utils import get_file_id_by_filename_and_user
+from app.db.models import PermissionEnum
 
 
 ALLOWED_EXTENSIONS = {
     ".pdf", ".docx", ".csv", ".xlsx",
     ".jpg", ".jpeg", ".png", ".mp3", ".wav",
     ".mp4", ".mkv", ".zip", ".tar", ".gz", ".tgz", ".txt"
+}
+
+INLINE_MIME_TYPES = {
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "text/plain",
+    "text/html",
+    "video/mp4"
 }
 
 # Define the chunk size for multipart uploads
@@ -86,7 +103,7 @@ async def save_file(file: UploadFile):
         else:
             version_id = await multipart_upload_to_s3(s3_key, tmp_path, file.content_type)
 
-        metadata = extract_metadata(tmp_path)
+        metadata = await asyncio.to_thread(extract_metadata, tmp_path)
 
     except (BotoCoreError, ClientError) as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
@@ -108,7 +125,7 @@ async def save_file(file: UploadFile):
         "status": "uploaded", 
         "message": "File uploaded to S3 successfully!"
     })
-    save_file_record_to_db(metadata)
+    await save_file_record_to_db(metadata)
     return metadata
 
 
@@ -199,46 +216,81 @@ def find_s3_key(filename: str) -> str:
     raise HTTPException(status_code=404, detail="File not found")
 
 
-# Function to get a file response for download
-async def get_file_response(filename: str, version_id: str = None):
+async def get_file_response(filename: str,user_id: str,version_id: str = None, mode: str = "download", file_id: str = None):
     try:
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User ID required to access the file.")
+
+        # Prefer file_id from input (testing) or resolve from DB
+        file_id = file_id or await get_file_id_by_filename_and_user(filename, user_id)
+
+        permission = await get_user_permission(file_id, user_id)
+        is_admin = await is_user_admin(user_id)
+
+        if not is_admin and (not permission or permission not in [
+            PermissionEnum.read, PermissionEnum.write, PermissionEnum.owner
+        ]):
+            raise HTTPException(status_code=403, detail="You do not have permission to view this file.")
+        
+        # Directly stream from S3
         s3_key = find_s3_key(filename)
         get_object_args = {
             "Bucket": AWS_S3_BUCKET,
             "Key": s3_key
         }
-
         if version_id:
             get_object_args["VersionId"] = version_id
 
-        s3_object = s3_client.get_object(**get_object_args)
-        file_stream = s3_object["Body"]
+        # Run blocking boto3 call in thread
+        s3_object = await asyncio.to_thread(s3_client.get_object, **get_object_args)
+        file_data = await asyncio.to_thread(lambda: s3_object["Body"].read())
+        file_stream = BytesIO(file_data)
+        content_type = s3_object.get("ContentType", "application/octet-stream")
+
+        if mode == "view" or (mode == "auto" and content_type in INLINE_MIME_TYPES):
+            disposition = f'inline; filename="{filename}"'
+        else:
+            disposition = f'attachment; filename="{filename}"'
 
         return StreamingResponse(
             file_stream,
-            media_type=s3_object["ContentType"],
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
-            }
+            media_type=content_type,
+            headers={"Content-Disposition": disposition}
         )
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Download error: {str(e)}")
 
-# Function to rename an existing file
-async def rename_existing_file(old_filename: str, new_filename: str):
+
+async def rename_existing_file(old_filename: str, new_filename: str, user_id: str,file_id: str = None):
     try:
+        file_id = file_id or old_filename.split("_")[0] 
+        permission = await get_user_permission(file_id, user_id)
+        is_admin = await is_user_admin(user_id)
+
+        if not is_admin and (not permission or permission not in [ PermissionEnum.write, PermissionEnum.owner]):
+            raise HTTPException(status_code=403, detail="You do not have permission to view this file.")
+
         old_key = find_s3_key(old_filename)
         old_extension = os.path.splitext(old_filename)[1]
         new_filename = os.path.splitext(new_filename)[0] + old_extension
         folder = os.path.dirname(old_key).replace(S3_UPLOAD_FOLDER, "")
         new_key = f"{S3_UPLOAD_FOLDER}{folder}/{new_filename}"
 
-        s3_client.copy_object(
+        # Use asyncio.to_thread for blocking operations
+        await asyncio.to_thread(
+            s3_client.copy_object,
             Bucket=AWS_S3_BUCKET,
             CopySource={"Bucket": AWS_S3_BUCKET, "Key": old_key},
             Key=new_key
         )
-        s3_client.delete_object(Bucket=AWS_S3_BUCKET, Key=old_key)
+        await asyncio.to_thread(
+            s3_client.delete_object,
+            Bucket=AWS_S3_BUCKET,
+            Key=old_key
+        )
 
         return {
             "message": "File renamed successfully!",
@@ -249,16 +301,32 @@ async def rename_existing_file(old_filename: str, new_filename: str):
         raise HTTPException(status_code=500, detail=f"Rename failed: {str(e)}")
 
 
-# Function to delete a file (optionally by version ID)
-async def delete_file_by_name(filename: str, version_id: str = None):
+async def delete_file_by_name(filename: str, user_id: str, version_id: str = None,file_id: str = None):
     try:
+        file_id = file_id or filename.split("_")[0]  
+        permission = await get_user_permission(file_id, user_id)
+        is_admin = await is_user_admin(user_id)
+
+        if not is_admin and (not permission or permission not in [ PermissionEnum.owner]):
+            raise HTTPException(status_code=403, detail="You do not have permission to view this file.")
+
         key = find_s3_key(filename)
 
+        # Offload delete operation to a thread
         if version_id:
-            s3_client.delete_object(Bucket=AWS_S3_BUCKET, Key=key, VersionId=version_id)
+            await asyncio.to_thread(
+                s3_client.delete_object,
+                Bucket=AWS_S3_BUCKET,
+                Key=key,
+                VersionId=version_id
+            )
             msg = "Specific version deleted."
         else:
-            s3_client.delete_object(Bucket=AWS_S3_BUCKET, Key=key)
+            await asyncio.to_thread(
+                s3_client.delete_object,
+                Bucket=AWS_S3_BUCKET,
+                Key=key
+            )
             msg = "File soft-deleted (delete marker added)."
 
         return {
@@ -270,5 +338,26 @@ async def delete_file_by_name(filename: str, version_id: str = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
-    
 
+async def grant_file_permission(file_id: str, user_id: str, permission: PermissionEnum):
+    acl_entry = await add_file_acl(file_id, user_id, permission)
+    return {
+        "message": "Permission granted.",
+        "file_id": acl_entry.file_id,
+        "user_id": acl_entry.user_id,
+        "access_type": acl_entry.access_type
+    }
+
+async def check_file_permission(file_id: str, user_id: str, permission: PermissionEnum):
+    user_perm = await get_user_permission(file_id, user_id)
+    if user_perm is None:
+        return {"has_permission": False, "reason": "No ACL entry"}
+
+    if permission == PermissionEnum.read:
+        return {"has_permission": user_perm in [PermissionEnum.read, PermissionEnum.write, PermissionEnum.owner]}
+    elif permission == PermissionEnum.write:
+        return {"has_permission": user_perm in [PermissionEnum.write, PermissionEnum.owner]}
+    elif permission == PermissionEnum.owner:
+        return {"has_permission": user_perm == PermissionEnum.owner}
+    
+    return {"has_permission": False}

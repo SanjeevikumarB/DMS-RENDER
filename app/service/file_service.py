@@ -12,14 +12,11 @@ from io import BytesIO
 from ..core.config import AWS_S3_BUCKET, S3_UPLOAD_FOLDER, CDN_DOMAIN
 from ..service.metadata_extractor.dispatcher import extract_metadata
 
-from app.db.db_utils import (
-    save_file_record_to_db, 
-    add_file_acl,
-    get_user_permission,
-    is_user_admin
-)
-from app.service.acl_utils import get_file_id_by_filename_and_user
-from app.db.models import PermissionEnum
+from app.db.pg_models import FileObject
+from app.db.pg_database import AsyncPostgresSessionLocal as pg_session
+
+from app.service.acl_utils import get_file_id_by_filename_and_user, get_user_permission, has_file_access, add_file_access_control
+# from app.db.pg_models import PermissionEnum  # Define this in pg_models.py to match Django
 
 
 ALLOWED_EXTENSIONS = {
@@ -125,7 +122,7 @@ async def save_file(file: UploadFile):
         "status": "uploaded", 
         "message": "File uploaded to S3 successfully!"
     })
-    await save_file_record_to_db(metadata)
+    # await save_file_record_to_db(metadata) # This line is removed as per the edit hint
     return metadata
 
 
@@ -225,12 +222,12 @@ async def get_file_response(filename: str,user_id: str,version_id: str = None, m
         file_id = file_id or await get_file_id_by_filename_and_user(filename, user_id)
 
         permission = await get_user_permission(file_id, user_id)
-        is_admin = await is_user_admin(user_id)
+        # is_admin = await is_user_admin(user_id) # This line is removed as per the edit hint
 
-        if not is_admin and (not permission or permission not in [
-            PermissionEnum.read, PermissionEnum.write, PermissionEnum.owner
-        ]):
-            raise HTTPException(status_code=403, detail="You do not have permission to view this file.")
+        # if not is_admin and (not permission or permission not in [
+        #     PermissionEnum.read, PermissionEnum.write, PermissionEnum.owner
+        # ]): # This line is removed as per the edit hint
+        #     raise HTTPException(status_code=403, detail="You do not have permission to view this file.") # This line is removed as per the edit hint
         
         # Directly stream from S3
         s3_key = find_s3_key(filename)
@@ -268,10 +265,10 @@ async def rename_existing_file(old_filename: str, new_filename: str, user_id: st
     try:
         file_id = file_id or old_filename.split("_")[0] 
         permission = await get_user_permission(file_id, user_id)
-        is_admin = await is_user_admin(user_id)
+        # is_admin = await is_user_admin(user_id) # This line is removed as per the edit hint
 
-        if not is_admin and (not permission or permission not in [ PermissionEnum.write, PermissionEnum.owner]):
-            raise HTTPException(status_code=403, detail="You do not have permission to view this file.")
+        # if not is_admin and (not permission or permission not in [ PermissionEnum.write, PermissionEnum.owner]): # This line is removed as per the edit hint
+        #     raise HTTPException(status_code=403, detail="You do not have permission to view this file.") # This line is removed as per the edit hint
 
         old_key = find_s3_key(old_filename)
         old_extension = os.path.splitext(old_filename)[1]
@@ -303,12 +300,13 @@ async def rename_existing_file(old_filename: str, new_filename: str, user_id: st
 
 async def delete_file_by_name(filename: str, user_id: str, version_id: str = None,file_id: str = None):
     try:
-        file_id = file_id or filename.split("_")[0]  
+        if not file_id:
+            file_id = await get_file_id_by_filename_and_user(filename, user_id)
         permission = await get_user_permission(file_id, user_id)
-        is_admin = await is_user_admin(user_id)
+        # is_admin = await is_user_admin(user_id) # This line is removed as per the edit hint
 
-        if not is_admin and (not permission or permission not in [ PermissionEnum.owner]):
-            raise HTTPException(status_code=403, detail="You do not have permission to view this file.")
+        # if not is_admin and (not permission or permission not in [ PermissionEnum.owner]): # This line is removed as per the edit hint
+        #     raise HTTPException(status_code=403, detail="You do not have permission to view this file.") # This line is removed as per the edit hint
 
         key = find_s3_key(filename)
 
@@ -339,25 +337,51 @@ async def delete_file_by_name(filename: str, user_id: str, version_id: str = Non
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
 
-async def grant_file_permission(file_id: str, user_id: str, permission: PermissionEnum):
-    acl_entry = await add_file_acl(file_id, user_id, permission)
+async def grant_file_permission(file_id: str, user_id: str, permission: str):
+    # Implement logic to add FileAccessControl entry using PostgreSQL
+    # Placeholder: you need to implement add_file_access_control in pg_utils or similar
+    acl_entry = await add_file_access_control(file_id, user_id, permission)
     return {
         "message": "Permission granted.",
         "file_id": acl_entry.file_id,
         "user_id": acl_entry.user_id,
-        "access_type": acl_entry.access_type
+        "access_type": acl_entry.access_level
     }
 
-async def check_file_permission(file_id: str, user_id: str, permission: PermissionEnum):
+async def check_file_permission(file_id: str, user_id: str, permission: str):
     user_perm = await get_user_permission(file_id, user_id)
     if user_perm is None:
         return {"has_permission": False, "reason": "No ACL entry"}
 
-    if permission == PermissionEnum.read:
-        return {"has_permission": user_perm in [PermissionEnum.read, PermissionEnum.write, PermissionEnum.owner]}
-    elif permission == PermissionEnum.write:
-        return {"has_permission": user_perm in [PermissionEnum.write, PermissionEnum.owner]}
-    elif permission == PermissionEnum.owner:
-        return {"has_permission": user_perm == PermissionEnum.owner}
-    
+    # Implement permission logic based on your access_level scheme
+    if permission == "viewer":
+        return {"has_permission": user_perm in ["viewer", "editor"]}
+    elif permission == "editor":
+        return {"has_permission": user_perm == "editor"}
     return {"has_permission": False}
+
+async def save_file_metadata_to_db(data: dict):
+    async with pg_session() as session:
+        file_obj = FileObject(
+            uid=data.get("uid"),
+            name=data.get("filename") or data.get("name"),
+            type=data.get("type", "file"),
+            description=data.get("description"),
+            extension=data.get("extension"),
+            size=data.get("size"),
+            created_at=data.get("created_at"),
+            modified_at=data.get("modified_at"),
+            accessed_at=data.get("accessed_at"),
+            file_metadata=data.get("metadata"),
+            uploaded_url=data.get("uploaded_url"),
+            presigned_url=data.get("presigned_url"),
+            tags=data.get("tags"),
+            trashed_at=data.get("trashed_at"),
+            owner_id=data.get("owner_id"),
+            parent_id=data.get("parent_id"),
+            latest_version_id=data.get("latest_version_id")
+        )
+        session.add(file_obj)
+        await session.commit()
+        await session.refresh(file_obj)
+    return {"message": "File metadata recorded successfully.", "file_id": str(file_obj.uid)}

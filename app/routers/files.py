@@ -2,9 +2,6 @@ from fastapi import UploadFile, APIRouter, File, Request, Query, Body
 from typing import List
 from app.service import file_service
 from ..service.s3_utils import generate_presigned_upload_url
-from app.db.db_utils import save_file_record_to_db
-from app.db.models import PermissionEnum
-
 
 router = APIRouter()
 
@@ -15,8 +12,7 @@ async def generate_url(file: UploadFile = File(...)):
 
 @router.post("/record-file-metadata/")
 async def record_file_metadata(data: dict = Body(...)):
-    save_file_record_to_db(data)
-    return {"message": "File metadata recorded successfully."}
+    return await file_service.save_file_metadata_to_db(data)
 
 # Define the router for file operations
 @router.post("/upload")
@@ -47,9 +43,9 @@ async def delete_file(request: Request,filename: str,version_id: str = Query(def
     return await file_service.delete_file_by_name(filename=filename,user_id=user_id,version_id=version_id,file_id=file_id)
 
 @router.post("/acl/grant")
-async def grant_acl(file_id: str = Body(...), user_id: str = Body(...), permission: PermissionEnum = Body(...)):
+async def grant_acl(file_id: str = Body(...), user_id: str = Body(...), permission: str = Body(...)):
     return await file_service.grant_file_permission(file_id, user_id, permission)
 
 @router.get("/acl/check")
-async def check_acl(file_id: str = Query(...), user_id: str = Query(...), permission: PermissionEnum = Query(...)):
+async def check_acl(file_id: str = Query(...), user_id: str = Query(...), permission: str = Query(...)):
     return await file_service.check_file_permission(file_id, user_id, permission)

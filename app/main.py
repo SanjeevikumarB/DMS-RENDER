@@ -34,3 +34,5 @@ app.include_router(files.router)
 
 #loadbalancer
 #acl in aws
+
+#need to store aws logs

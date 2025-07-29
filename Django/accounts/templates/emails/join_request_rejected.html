@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>DMS Access Rejected</title>
+  <style>
+    body { font-family: "Segoe UI", Roboto, sans-serif; background: #f4f4f7; margin: 0; padding: 0; }
+    .container { max-width: 600px; margin: 40px auto; background: white; border-radius: 8px; padding: 40px; }
+    .header { text-align: center; margin-bottom: 20px; }
+    .header h1 { color: #e53935; }
+    .footer { text-align: center; font-size: 12px; color: #999; margin-top: 30px; }
+    .highlight { font-weight: bold; color: #e53935; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>DMS - Access Rejected</h1>
+    </div>
+    <p>Hello {{ name }},</p>
+    <p>Unfortunately, your request to join the <span class="highlight">Document Management System</span> has been <strong>rejected</strong>.</p>
+    <p>If you believe this was a mistake, you can try registering again or contact support.</p>
+    <p>Thanks,<br>The DMS Team</p>
+    <div class="footer">&copy; {{ year }} Document Management System. All rights reserved.</div>
+  </div>
+</body>
+</html>

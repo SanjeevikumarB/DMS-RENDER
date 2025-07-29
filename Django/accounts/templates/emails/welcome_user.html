@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Welcome to DMS</title>
+  <style>
+    body { font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f4f7; }
+    .email-container { max-width: 600px; margin: 40px auto; background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); padding: 40px; }
+    .header { text-align: center; margin-bottom: 30px; }
+    .header h1 { margin: 0; color: #3f51b5; }
+    .content p { font-size: 16px; color: #333; line-height: 1.6; }
+    .footer { text-align: center; font-size: 12px; color: #999; margin-top: 40px; }
+  </style>
+</head>
+<body>
+  <div class="email-container">
+    <div class="header">
+      <h1>Welcome to DMS</h1>
+    </div>
+    <div class="content">
+      <p>Hello {{ name }},</p>
+      <p>Your account has been successfully created in the Document Management System.</p>
+      <p>You can now log in and start using DMS to manage your documents securely.</p>
+      <p>Thanks,<br>The DMS Team</p>
+    </div>
+    <div class="footer">
+      &copy; {{ year }} Document Management System. All rights reserved.
+    </div>
+  </div>
+</body>
+</html>

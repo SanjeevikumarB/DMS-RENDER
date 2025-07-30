@@ -385,3 +385,59 @@ async def save_file_metadata_to_db(data: dict):
         await session.commit()
         await session.refresh(file_obj)
     return {"message": "File metadata recorded successfully.", "file_id": str(file_obj.uid)}
+
+async def list_s3_delete_markers(prefix: str = None):
+    """
+    List all delete markers in the S3 bucket (optionally filtered by prefix).
+    Returns a list of dicts with Key, VersionId, LastModified, and IsLatest.
+    """
+    try:
+        kwargs = {'Bucket': AWS_S3_BUCKET}
+        if prefix:
+            kwargs['Prefix'] = prefix
+        delete_markers = []
+        while True:
+            response = s3_client.list_object_versions(**kwargs)
+            for marker in response.get('DeleteMarkers', []):
+                delete_markers.append({
+                    'key': marker['Key'],
+                    'version_id': marker['VersionId'],
+                    'last_modified': marker['LastModified'].isoformat(),
+                    'is_latest': marker['IsLatest']
+                })
+            if response.get('IsTruncated'):
+                kwargs['KeyMarker'] = response.get('NextKeyMarker')
+                kwargs['VersionIdMarker'] = response.get('NextVersionIdMarker')
+            else:
+                break
+        return delete_markers
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list delete markers: {str(e)}")
+
+async def restore_s3_file_from_delete_marker(key: str, version_id: str):
+    """
+    Remove the delete marker for the given key/version_id, restoring the file.
+    """
+    try:
+        # Check if the key exists as a delete marker
+        response = s3_client.list_object_versions(Bucket=AWS_S3_BUCKET, Prefix=key)
+        found = False
+        for marker in response.get('DeleteMarkers', []):
+            if marker['Key'] == key and marker['VersionId'] == version_id:
+                found = True
+                break
+        if not found:
+            raise HTTPException(status_code=404, detail=f"Delete marker not found for key: {key} and version_id: {version_id}")
+        # Remove the delete marker
+        del_response = s3_client.delete_object(Bucket=AWS_S3_BUCKET, Key=key, VersionId=version_id)
+        # Log the response for debugging
+        print(f"Delete marker removal response: {del_response}")
+        # Double-check if the delete marker is gone
+        post_response = s3_client.list_object_versions(Bucket=AWS_S3_BUCKET, Prefix=key)
+        still_exists = any(m['Key'] == key and m['VersionId'] == version_id for m in post_response.get('DeleteMarkers', []))
+        if still_exists:
+            raise HTTPException(status_code=500, detail=f"Delete marker was not removed. S3 response: {del_response}")
+        return {"message": f"Restored {key} by removing delete marker {version_id}", "s3_response": del_response}
+    except Exception as e:
+        print(f"Error removing delete marker: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to restore file: {str(e)}")

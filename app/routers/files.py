@@ -1,4 +1,4 @@
-from fastapi import UploadFile, APIRouter, File, Request, Query, Body
+from fastapi import UploadFile, APIRouter, File, Request, Query, Body, HTTPException
 from typing import List
 from app.service import file_service
 from ..service.s3_utils import generate_presigned_upload_url
@@ -49,3 +49,11 @@ async def grant_acl(file_id: str = Body(...), user_id: str = Body(...), permissi
 @router.get("/acl/check")
 async def check_acl(file_id: str = Query(...), user_id: str = Query(...), permission: str = Query(...)):
     return await file_service.check_file_permission(file_id, user_id, permission)
+
+@router.get("/s3/delete-markers", tags=["S3 Restoring"])
+async def list_s3_delete_markers(prefix: str = None):
+    return await file_service.list_s3_delete_markers(prefix)
+
+@router.post("/s3/restore-file", tags=["S3 Restoring"])
+async def restore_s3_file_from_delete_marker(key: str = Body(..., embed=True),version_id: str = Body(..., embed=True)):
+    return await file_service.restore_s3_file_from_delete_marker(key, version_id)

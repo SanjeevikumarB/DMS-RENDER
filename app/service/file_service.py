@@ -478,7 +478,7 @@ async def archive_file_version_to_glacier(filename: str, version_id: str):
     try:
         key = find_s3_key(filename)
 
-        # Step 1: Copy to Glacier
+        # Step 1: Copy the version to Glacier_IR
         copy_response = await asyncio.to_thread(
             s3_client.copy_object,
             Bucket=AWS_S3_BUCKET,
@@ -493,7 +493,7 @@ async def archive_file_version_to_glacier(filename: str, version_id: str):
         )
         new_version_id = copy_response["VersionId"]
 
-        # Step 2: Delete old version
+        # Step 2: Delete the original version
         await asyncio.to_thread(
             s3_client.delete_object,
             Bucket=AWS_S3_BUCKET,
@@ -501,45 +501,25 @@ async def archive_file_version_to_glacier(filename: str, version_id: str):
             VersionId=version_id
         )
 
-        # Step 3: DB operations
+        # Step 3: Get file_id from DB using original version_id
         async with pg_session() as session:
-            # Get old version entry (to copy metadata)
             result = await session.execute(
-                select(FileVersion).where(FileVersion.s3_version_id == version_id)
+                select(FileVersion.file_id).where(FileVersion.s3_version_id == version_id)
             )
-            old_version = result.scalar_one_or_none()
-            if not old_version:
-                raise HTTPException(status_code=404, detail="Original file version not found in DB")
+            file_id = result.scalar_one_or_none()
 
-            # Step 3a: Add new FileVersion with Glacier info
-            new_file_version = FileVersion(
-                file_id=old_version.file_id,
-                action="archived_to_glacier",
-                metadata_snapshot=old_version.metadata_snapshot,
-                s3_version_id=new_version_id,
-                created_by_id=old_version.created_by_id,
-                storage_class="GLACIER_IR",
-                restore_status="archived"
-            )
-            session.add(new_file_version)
-
-            # Step 3b: Update FileObject.latest_version_id
-            file_result = await session.execute(
-                select(FileObject).where(FileObject.uid == old_version.file_id)
-            )
-            file_obj = file_result.scalar_one_or_none()
-            if file_obj:
-                file_obj.latest_version_id = new_version_id
-
-            await session.commit()
+            if not file_id:
+                raise HTTPException(status_code=404, detail="File ID not found for given version ID")
 
         return {
-            "message": f"Archived version {version_id} as Glacier version {new_version_id} and deleted original.",
-            "glacier_version_id": new_version_id
+            "message": "Archived to Glacier_IR and deleted original version.",
+            "file_id": file_id,
+            "new_version_id": new_version_id
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to archive file: {str(e)}")
+
 
 async def restore_file_from_glacier(filename: str, version_id: str):
     try:

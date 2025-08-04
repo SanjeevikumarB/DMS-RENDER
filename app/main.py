@@ -36,3 +36,7 @@ app.include_router(files.router)
 #acl in aws
 
 #need to store aws logs
+
+#batch processing and cost of restoring files
+#s3 bucket policy
+#s3 bucket lifecycle policy

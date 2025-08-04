@@ -37,6 +37,8 @@ class FileVersion(PostgresBase):
     s3_version_id = Column(String(255), nullable=True)
     created_at = Column(DateTime)
     created_by_id = Column(UUID(as_uuid=True), nullable=True)
+    storage_class = Column(String(50), default="STANDARD") 
+    restore_status = Column(String(20), default="available") 
 
 class TrashAutoCleanQueue(PostgresBase):
     __tablename__ = "files_trashautocleanqueue"

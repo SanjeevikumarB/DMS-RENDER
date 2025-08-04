@@ -41,6 +41,8 @@ class FileVersion(models.Model):
     s3_version_id = models.CharField(max_length=255, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
+    storage_class = models.CharField(max_length=50, default="STANDARD")
+    restore_status = models.CharField(max_length=20, default="available")
  
     class Meta:
         indexes = [

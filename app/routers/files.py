@@ -57,3 +57,15 @@ async def list_s3_delete_markers(prefix: str = None):
 @router.post("/s3/restore-file", tags=["S3 Restoring"])
 async def restore_s3_file_from_delete_marker(key: str = Body(..., embed=True),version_id: str = Body(..., embed=True)):
     return await file_service.restore_s3_file_from_delete_marker(key, version_id)
+
+@router.post("/s3/archive-version", tags=["S3 Glacier"])
+async def archive_version(filename: str = Body(...), version_id: str = Body(...)):
+    return await file_service.archive_file_version_to_glacier(filename, version_id)
+
+@router.post("/s3/restore-from-glacier", tags=["S3 Glacier"])
+async def restore_from_glacier(filename: str = Body(...), version_id: str = Body(...)):
+    return await file_service.restore_file_from_glacier(filename, version_id)
+
+@router.post("/s3/restore-status", tags=["S3 Glacier"])
+async def glacier_restore_status(filename: str = Body(..., embed=True),version_id: str = Body(..., embed=True)):
+    return await file_service.get_glacier_restore_status(filename, version_id)

@@ -1,7 +1,7 @@
 import os
 import tempfile
 import datetime
-from typing import List, Union
+from typing import List, Union, Dict
 from fastapi import UploadFile, HTTPException, File, Request
 from starlette.responses import StreamingResponse
 from botocore.exceptions import BotoCoreError, ClientError
@@ -300,72 +300,69 @@ async def rename_existing_file(old_filename: str, new_filename: str, user_id: st
         raise HTTPException(status_code=500, detail=f"Rename failed: {str(e)}")
 
 
-async def delete_file_by_name(filename: str, user_id: str, version_id: str = None, file_id: str = None):
-    try:
-        # Resolve file_id if not provided
-        if not file_id:
-            file_id = await get_file_id_by_filename_and_user(filename, user_id)
-        permission = await get_user_permission(file_id, user_id)
-        # Permission checks (admin logic removed as per hint)
-        # if not permission or permission != "owner":
-        #     raise HTTPException(status_code=403, detail="You do not have permission to delete this file.")
+async def delete_files_by_name(file_list: List[Dict[str, str]]):
+    deleted = []
+    errors = []
 
-        key = find_s3_key(filename)
+    for file_entry in file_list:
+        filename = file_entry.get("filename")
+        version_id = file_entry.get("version_id")
 
-        if version_id:
-            # List versions to check if version_id exists
-            response = s3_client.list_object_versions(Bucket=AWS_S3_BUCKET, Prefix=key)
+        if not filename or not version_id:
+            errors.append({
+                "filename": filename,
+                "error": "Both filename and version_id are required"
+            })
+            continue
+
+        try:
+            key = find_s3_key(filename)
+
+            # Validate the version exists
+            response = await asyncio.to_thread(
+                s3_client.list_object_versions,
+                Bucket=AWS_S3_BUCKET,
+                Prefix=key
+            )
+
             valid_version = any(
                 v["VersionId"] == version_id and v["Key"] == key
                 for v in response.get("Versions", [])
             )
+
             if not valid_version:
-                raise HTTPException(status_code=404, detail=f"Version {version_id} does not exist for {filename}")
-            # Archive the specific version to Glacier before deletion
-            await asyncio.to_thread(
-                s3_client.copy_object,
-                Bucket=AWS_S3_BUCKET,
-                CopySource={"Bucket": AWS_S3_BUCKET, "Key": key, "VersionId": version_id},
-                Key=key,
-                StorageClass="GLACIER_IR",
-                MetadataDirective="COPY"
-            )
+                errors.append({
+                    "filename": filename,
+                    "version_id": version_id,
+                    "error": "Version not found"
+                })
+                continue
+
+            # Delete the specific version
             await asyncio.to_thread(
                 s3_client.delete_object,
                 Bucket=AWS_S3_BUCKET,
                 Key=key,
                 VersionId=version_id
             )
-            msg = "Specific version archived to Glacier and deleted."
-        else:
-            # Soft-delete: add a delete marker for the latest version
-            await asyncio.to_thread(
-                s3_client.delete_object,
-                Bucket=AWS_S3_BUCKET,
-                Key=key
-            )
-            # Move all noncurrent versions to Glacier
-            response = s3_client.list_object_versions(Bucket=AWS_S3_BUCKET, Prefix=key)
-            for version in response.get("Versions", []):
-                if version["Key"] == key and not version["IsLatest"]:
-                    await asyncio.to_thread(
-                        s3_client.copy_object,
-                        Bucket=AWS_S3_BUCKET,
-                        CopySource={"Bucket": AWS_S3_BUCKET, "Key": key, "VersionId": version["VersionId"]},
-                        Key=key,
-                        StorageClass="GLACIER_IR",
-                        MetadataDirective="COPY"
-                    )
-            msg = "File soft-deleted and noncurrent versions archived to Glacier."
 
-        return {
-            "filename": filename,
-            "version_id": version_id,
-            "message": msg,
-        }
+            deleted.append({
+                "filename": filename,
+                "version_id": version_id,
+                "status": "deleted"
+            })
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+        except Exception as e:
+            errors.append({
+                "filename": filename,
+                "version_id": version_id,
+                "error": str(e)
+            })
+
+    return {
+        "deleted": deleted,
+        "errors": errors
+    }
 
 
 async def grant_file_permission(file_id: str, user_id: str, permission: str):
@@ -474,51 +471,81 @@ async def restore_s3_file_from_delete_marker(key: str, version_id: str):
         print(f"Error removing delete marker: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to restore file: {str(e)}")
     
-async def archive_file_version_to_glacier(filename: str, version_id: str):
-    try:
-        key = find_s3_key(filename)
+async def archive_files_to_glacier(file_list: List[Dict[str, str]]):
+    archived = []
+    errors = []
 
-        # Step 1: Copy the version to Glacier_IR
-        copy_response = await asyncio.to_thread(
-            s3_client.copy_object,
-            Bucket=AWS_S3_BUCKET,
-            CopySource={
-                "Bucket": AWS_S3_BUCKET,
-                "Key": key,
-                "VersionId": version_id
-            },
-            Key=key,
-            StorageClass="GLACIER_IR",
-            MetadataDirective="COPY"
-        )
-        new_version_id = copy_response["VersionId"]
+    for entry in file_list:
+        filename = entry.get("filename")
+        version_id = entry.get("version_id")
 
-        # Step 2: Delete the original version
-        await asyncio.to_thread(
-            s3_client.delete_object,
-            Bucket=AWS_S3_BUCKET,
-            Key=key,
-            VersionId=version_id
-        )
+        if not filename or not version_id:
+            errors.append({
+                "filename": filename,
+                "error": "Both filename and version_id are required"
+            })
+            continue
 
-        # Step 3: Get file_id from DB using original version_id
-        async with pg_session() as session:
-            result = await session.execute(
-                select(FileVersion.file_id).where(FileVersion.s3_version_id == version_id)
+        try:
+            key = find_s3_key(filename)
+
+            # Step 1: Copy to Glacier_IR
+            copy_response = await asyncio.to_thread(
+                s3_client.copy_object,
+                Bucket=AWS_S3_BUCKET,
+                CopySource={
+                    "Bucket": AWS_S3_BUCKET,
+                    "Key": key,
+                    "VersionId": version_id
+                },
+                Key=key,
+                StorageClass="GLACIER_IR",
+                MetadataDirective="COPY"
             )
-            file_id = result.scalar_one_or_none()
+
+            new_version_id = copy_response["VersionId"]
+
+            # Step 2: Delete original version
+            await asyncio.to_thread(
+                s3_client.delete_object,
+                Bucket=AWS_S3_BUCKET,
+                Key=key,
+                VersionId=version_id
+            )
+
+            # Step 3: Get file_id from DB
+            async with pg_session() as session:
+                result = await session.execute(
+                    select(FileVersion.file_id).where(FileVersion.s3_version_id == version_id)
+                )
+                file_id = result.scalar_one_or_none()
 
             if not file_id:
-                raise HTTPException(status_code=404, detail="File ID not found for given version ID")
+                errors.append({
+                    "filename": filename,
+                    "version_id": version_id,
+                    "error": "File ID not found for given version ID"
+                })
+                continue
 
-        return {
-            "message": "Archived to Glacier_IR and deleted original version.",
-            "file_id": file_id,
-            "new_version_id": new_version_id
-        }
+            archived.append({
+                "filename": filename,
+                "file_id": file_id,
+                "archived_version_id": new_version_id,
+                "deleted_original_version_id": version_id
+            })
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to archive file: {str(e)}")
+        except Exception as e:
+            errors.append({
+                "filename": filename,
+                "version_id": version_id,
+                "error": str(e)
+            })
+
+    return {
+        "archived": archived,
+        "errors": errors
+    }
 
 
 async def restore_file_from_glacier(filename: str, version_id: str):

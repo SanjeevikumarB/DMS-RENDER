@@ -171,6 +171,35 @@ async def multipart_upload_to_s3(s3_key: str, file_path: str, content_type: str)
         raise HTTPException(status_code=500, detail=f"Multipart upload failed: {str(e)}")
 
 
+
+async def save_file_metadata_to_db(data: dict):
+    async with pg_session() as session:
+        file_obj = FileObject(
+            uid=data.get("uid"),
+            name=data.get("filename") or data.get("name"),
+            type=data.get("type", "file"),
+            description=data.get("description"),
+            extension=data.get("extension"),
+            size=data.get("size"),
+            created_at=data.get("created_at"),
+            modified_at=data.get("modified_at"),
+            accessed_at=data.get("accessed_at"),
+            file_metadata=data.get("metadata"),
+            uploaded_url=data.get("uploaded_url"),
+            presigned_url=data.get("presigned_url"),
+            tags=data.get("tags"),
+            trashed_at=data.get("trashed_at"),
+            owner_id=data.get("owner_id"),
+            parent_id=data.get("parent_id"),
+            latest_version_id=data.get("latest_version_id"),
+            storage_class=data.get("storage_class", "STANDARD") 
+        )
+        session.add(file_obj)
+        await session.commit()
+        await session.refresh(file_obj)
+    return {"message": "File metadata recorded successfully.", "file_id": str(file_obj.uid)}
+
+
 # Function to list all files in the S3 bucket
 async def list_files():
     try:
@@ -300,20 +329,17 @@ async def rename_existing_file(old_filename: str, new_filename: str, user_id: st
         raise HTTPException(status_code=500, detail=f"Rename failed: {str(e)}")
 
 
-async def delete_files_by_name(file_list: List[Dict[str, str]]):
-    deleted = []
-    errors = []
-
-    for file_entry in file_list:
+async def delete_single_file(file_entry: Dict[str, str], semaphore: asyncio.Semaphore) -> Dict[str, any]:
+    """Delete a single file version with semaphore control"""
+    async with semaphore:
         filename = file_entry.get("filename")
         version_id = file_entry.get("version_id")
 
         if not filename or not version_id:
-            errors.append({
+            return {
                 "filename": filename,
                 "error": "Both filename and version_id are required"
-            })
-            continue
+            }
 
         try:
             key = find_s3_key(filename)
@@ -331,12 +357,11 @@ async def delete_files_by_name(file_list: List[Dict[str, str]]):
             )
 
             if not valid_version:
-                errors.append({
+                return {
                     "filename": filename,
                     "version_id": version_id,
                     "error": "Version not found"
-                })
-                continue
+                }
 
             # Delete the specific version
             await asyncio.to_thread(
@@ -346,25 +371,316 @@ async def delete_files_by_name(file_list: List[Dict[str, str]]):
                 VersionId=version_id
             )
 
-            deleted.append({
+            return {
                 "filename": filename,
                 "version_id": version_id,
                 "status": "deleted"
-            })
+            }
 
         except Exception as e:
-            errors.append({
+            return {
                 "filename": filename,
                 "version_id": version_id,
                 "error": str(e)
+            }
+
+async def delete_files_by_name(file_list: List[Dict[str, str]], max_concurrent: int = 10):
+    """Delete files with semaphore-based concurrency control"""
+    if not file_list:
+        return {"deleted": [], "errors": []}
+    
+    # Create semaphore to limit concurrent operations
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    # Create tasks for all files
+    tasks = [delete_single_file(file_entry, semaphore) for file_entry in file_list]
+    
+    # Execute all tasks concurrently with semaphore control
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Process results
+    deleted = []
+    errors = []
+    
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            # Handle unexpected exceptions
+            filename = file_list[i].get("filename", "unknown")
+            version_id = file_list[i].get("version_id", "unknown")
+            errors.append({
+                "filename": filename,
+                "version_id": version_id,
+                "error": f"Unexpected error: {str(result)}"
             })
+        elif "error" in result:
+            errors.append(result)
+        else:
+            deleted.append(result)
 
     return {
         "deleted": deleted,
-        "errors": errors
+        "errors": errors,
+        "summary": {
+            "total_requested": len(file_list),
+            "successful_deletions": len(deleted),
+            "failed_deletions": len(errors)
+        }
     }
 
 
+async def archive_single_file(file_entry: Dict[str, str], semaphore: asyncio.Semaphore) -> Dict[str, any]:
+    """Archive a single file to Glacier with semaphore control"""
+    async with semaphore:
+        filename = file_entry.get("filename")
+        version_id = file_entry.get("version_id")
+
+        if not filename or not version_id:
+            return {
+                "filename": filename,
+                "error": "Both filename and version_id are required"
+            }
+
+        try:
+            key = find_s3_key(filename)
+
+            # Step 1: Copy to Glacier_IR
+            copy_response = await asyncio.to_thread(
+                s3_client.copy_object,
+                Bucket=AWS_S3_BUCKET,
+                CopySource={
+                    "Bucket": AWS_S3_BUCKET,
+                    "Key": key,
+                    "VersionId": version_id
+                },
+                Key=key,
+                StorageClass="GLACIER_IR",
+                MetadataDirective="COPY"
+            )
+
+            new_version_id = copy_response["VersionId"]
+
+            # Step 2: Delete original version
+            await asyncio.to_thread(
+                s3_client.delete_object,
+                Bucket=AWS_S3_BUCKET,
+                Key=key,
+                VersionId=version_id
+            )
+
+            # Step 3: Get file_id from DB
+            async with pg_session() as session:
+                result = await session.execute(
+                    select(FileVersion.file_id).where(FileVersion.s3_version_id == version_id)
+                )
+                file_id = result.scalar_one_or_none()
+
+            if not file_id:
+                return {
+                    "filename": filename,
+                    "version_id": version_id,
+                    "error": "File ID not found for given version ID"
+                }
+
+            return {
+                "filename": filename,
+                "file_id": file_id,
+                "archived_version_id": new_version_id,
+                "deleted_original_version_id": version_id
+            }
+
+        except Exception as e:
+            return {
+                "filename": filename,
+                "version_id": version_id,
+                "error": str(e)
+            }
+
+async def archive_files_to_glacier(file_list: List[Dict[str, str]], max_concurrent: int = 10):
+    """Archive files to Glacier with semaphore-based concurrency control"""
+    if not file_list:
+        return {"archived": [], "errors": []}
+    
+    # Create semaphore to limit concurrent operations
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    # Create tasks for all files
+    tasks = [archive_single_file(file_entry, semaphore) for file_entry in file_list]
+    
+    # Execute all tasks concurrently with semaphore control
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Process results
+    archived = []
+    errors = []
+    
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            # Handle unexpected exceptions
+            filename = file_list[i].get("filename", "unknown")
+            version_id = file_list[i].get("version_id", "unknown")
+            errors.append({
+                "filename": filename,
+                "version_id": version_id,
+                "error": f"Unexpected error: {str(result)}"
+            })
+        elif "error" in result:
+            errors.append(result)
+        else:
+            archived.append(result)
+
+    return {
+        "archived": archived,
+        "errors": errors,
+        "summary": {
+            "total_requested": len(file_list),
+            "successful_archives": len(archived),
+            "failed_archives": len(errors)
+        }
+    }
+async def restore_single_file(file_entry: Dict[str, str], semaphore: asyncio.Semaphore) -> Dict[str, any]:
+    """Restore a single file from Glacier Instant Retrieval with semaphore control"""
+    async with semaphore:
+        filename = file_entry.get("filename")
+        version_id = file_entry.get("version_id")
+
+        if not filename or not version_id:
+            return {
+                "filename": filename,
+                "error": "Both filename and version_id are required"
+            }
+
+        try:
+            key = find_s3_key(filename)
+
+            # Check if the object exists and is in Glacier IR
+            try:
+                head_response = await asyncio.to_thread(
+                    s3_client.head_object,
+                    Bucket=AWS_S3_BUCKET,
+                    Key=key,
+                    VersionId=version_id
+                )
+                
+                storage_class = head_response.get('StorageClass', 'STANDARD')
+                
+                # Check if it's in Glacier IR
+                if storage_class != 'GLACIER_IR':
+                    return {
+                        "filename": filename,
+                        "version_id": version_id,
+                        "status": "not_in_glacier_ir",
+                        "current_storage_class": storage_class,
+                        "message": f"File is not in Glacier IR (current storage class: {storage_class}). Files in Glacier IR are instantly accessible."
+                    }
+
+                # For Glacier IR, files are instantly accessible - restore to Standard
+                copy_response = await asyncio.to_thread(
+                    s3_client.copy_object,
+                    Bucket=AWS_S3_BUCKET,
+                    CopySource={
+                        "Bucket": AWS_S3_BUCKET,
+                        "Key": key,
+                        "VersionId": version_id
+                    },
+                    Key=key,
+                    StorageClass="STANDARD",
+                    MetadataDirective="COPY"
+                )
+
+                new_version_id = copy_response["VersionId"]
+
+                # Delete the Glacier IR version
+                await asyncio.to_thread(
+                    s3_client.delete_object,
+                    Bucket=AWS_S3_BUCKET,
+                    Key=key,
+                    VersionId=version_id
+                )
+
+                # Update database if needed
+                async with pg_session() as session:
+                    result = await session.execute(
+                        select(FileVersion.file_id).where(FileVersion.s3_version_id == version_id)
+                    )
+                    file_id = result.scalar_one_or_none()
+
+                return {
+                    "filename": filename,
+                    "file_id": file_id,
+                    "old_version_id": version_id,
+                    "new_version_id": new_version_id,
+                    "old_storage_class": "GLACIER_IR",
+                    "new_storage_class": "STANDARD",
+                    "status": "restored",
+                    "message": "File successfully restored from Glacier IR to Standard storage (instantly accessible)"
+                }
+
+            except Exception as e:
+                if "NoSuchKey" in str(e) or "NoSuchVersion" in str(e):
+                    return {
+                        "filename": filename,
+                        "version_id": version_id,
+                        "error": "File version not found"
+                    }
+                raise e
+
+        except Exception as e:
+            return {
+                "filename": filename,
+                "version_id": version_id,
+                "error": str(e)
+            }
+
+async def restore_files_from_glacier(file_list: List[Dict[str, str]], max_concurrent: int = 10):
+    """Restore files from Glacier IR with semaphore-based concurrency control"""
+    if not file_list:
+        return {"restored": [], "errors": []}
+    
+    # Create semaphore to limit concurrent operations
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    # Create tasks for all files
+    tasks = [restore_single_file(file_entry, semaphore) for file_entry in file_list]
+    
+    # Execute all tasks concurrently with semaphore control
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Process results
+    restored = []
+    errors = []
+    
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            # Handle unexpected exceptions
+            filename = file_list[i].get("filename", "unknown")
+            version_id = file_list[i].get("version_id", "unknown")
+            errors.append({
+                "filename": filename,
+                "version_id": version_id,
+                "error": f"Unexpected error: {str(result)}"
+            })
+        elif "error" in result:
+            errors.append(result)
+        else:
+            restored.append(result)
+
+    return {
+        "restored": restored,
+        "errors": errors,
+        "summary": {
+            "total_requested": len(file_list),
+            "successful_restorations": len(restored),
+            "failed_restorations": len(errors),
+            "note": "Files restored from Glacier IR to Standard storage are instantly accessible"
+        }
+    }
+
+async def get_glacier_restore_status(filename: str, version_id: str):
+    try:
+        return {"status": "restored"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to check restore status: {str(e)}")
+    
 async def grant_file_permission(file_id: str, user_id: str, permission: str):
     # Implement logic to add FileAccessControl entry using PostgreSQL
     # Placeholder: you need to implement add_file_access_control in pg_utils or similar
@@ -387,33 +703,6 @@ async def check_file_permission(file_id: str, user_id: str, permission: str):
     elif permission == "editor":
         return {"has_permission": user_perm == "editor"}
     return {"has_permission": False}
-
-async def save_file_metadata_to_db(data: dict):
-    async with pg_session() as session:
-        file_obj = FileObject(
-            uid=data.get("uid"),
-            name=data.get("filename") or data.get("name"),
-            type=data.get("type", "file"),
-            description=data.get("description"),
-            extension=data.get("extension"),
-            size=data.get("size"),
-            created_at=data.get("created_at"),
-            modified_at=data.get("modified_at"),
-            accessed_at=data.get("accessed_at"),
-            file_metadata=data.get("metadata"),
-            uploaded_url=data.get("uploaded_url"),
-            presigned_url=data.get("presigned_url"),
-            tags=data.get("tags"),
-            trashed_at=data.get("trashed_at"),
-            owner_id=data.get("owner_id"),
-            parent_id=data.get("parent_id"),
-            latest_version_id=data.get("latest_version_id"),
-            storage_class=data.get("storage_class", "STANDARD") 
-        )
-        session.add(file_obj)
-        await session.commit()
-        await session.refresh(file_obj)
-    return {"message": "File metadata recorded successfully.", "file_id": str(file_obj.uid)}
 
 async def list_s3_delete_markers(prefix: str = None):
     """
@@ -470,113 +759,3 @@ async def restore_s3_file_from_delete_marker(key: str, version_id: str):
     except Exception as e:
         print(f"Error removing delete marker: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to restore file: {str(e)}")
-    
-async def archive_files_to_glacier(file_list: List[Dict[str, str]]):
-    archived = []
-    errors = []
-
-    for entry in file_list:
-        filename = entry.get("filename")
-        version_id = entry.get("version_id")
-
-        if not filename or not version_id:
-            errors.append({
-                "filename": filename,
-                "error": "Both filename and version_id are required"
-            })
-            continue
-
-        try:
-            key = find_s3_key(filename)
-
-            # Step 1: Copy to Glacier_IR
-            copy_response = await asyncio.to_thread(
-                s3_client.copy_object,
-                Bucket=AWS_S3_BUCKET,
-                CopySource={
-                    "Bucket": AWS_S3_BUCKET,
-                    "Key": key,
-                    "VersionId": version_id
-                },
-                Key=key,
-                StorageClass="GLACIER_IR",
-                MetadataDirective="COPY"
-            )
-
-            new_version_id = copy_response["VersionId"]
-
-            # Step 2: Delete original version
-            await asyncio.to_thread(
-                s3_client.delete_object,
-                Bucket=AWS_S3_BUCKET,
-                Key=key,
-                VersionId=version_id
-            )
-
-            # Step 3: Get file_id from DB
-            async with pg_session() as session:
-                result = await session.execute(
-                    select(FileVersion.file_id).where(FileVersion.s3_version_id == version_id)
-                )
-                file_id = result.scalar_one_or_none()
-
-            if not file_id:
-                errors.append({
-                    "filename": filename,
-                    "version_id": version_id,
-                    "error": "File ID not found for given version ID"
-                })
-                continue
-
-            archived.append({
-                "filename": filename,
-                "file_id": file_id,
-                "archived_version_id": new_version_id,
-                "deleted_original_version_id": version_id
-            })
-
-        except Exception as e:
-            errors.append({
-                "filename": filename,
-                "version_id": version_id,
-                "error": str(e)
-            })
-
-    return {
-        "archived": archived,
-        "errors": errors
-    }
-
-
-async def restore_file_from_glacier(filename: str, version_id: str):
-    try:
-        # Just update DB to mark as "restored" (or accessible)
-        async with pg_session() as session:
-            result = await session.execute(
-                select(FileVersion).where(FileVersion.s3_version_id == version_id)
-            )
-            version_obj = result.scalar_one_or_none()
-
-            if version_obj:
-                version_obj.restore_status = "restored"
-
-                # Update latest version if needed
-                file_result = await session.execute(
-                    select(FileObject).where(FileObject.uid == version_obj.file_id)
-                )
-                file_obj = file_result.scalar_one_or_none()
-                if file_obj:
-                    file_obj.latest_version_id = version_id
-
-                await session.commit()
-
-        return {"message": f"No restore needed. Version {version_id} is already accessible (GLACIER_IR)"}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Restore check failed: {str(e)}")
-
-async def get_glacier_restore_status(filename: str, version_id: str):
-    try:
-        return {"status": "restored"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to check restore status: {str(e)}")

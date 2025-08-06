@@ -61,9 +61,9 @@ async def check_acl(file_id: str = Query(...), user_id: str = Query(...), permis
 async def archive_version(files: List[Dict[str, str]] = Body(...)):
     return await file_service.archive_files_to_glacier(files)
 
-# @router.post("/s3/restore-from-glacier", tags=["S3 Glacier"])
-# async def restore_from_glacier(filename: str = Body(...), version_id: str = Body(...)):
-#     return await file_service.restore_file_from_glacier(filename, version_id)
+@router.post("/s3/restore-from-glacier", tags=["S3 Glacier"])
+async def restore_from_glacier(files: List[Dict[str, str]] = Body(...)):
+    return await file_service.restore_files_from_glacier(files)
 
 # @router.post("/s3/restore-status", tags=["S3 Glacier"])
 # async def glacier_restore_status(filename: str = Body(..., embed=True),version_id: str = Body(..., embed=True)):

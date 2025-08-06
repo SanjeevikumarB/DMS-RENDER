@@ -4,11 +4,11 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from django.http import HttpResponse
 from accounts.authentication import CustomJWEAuthentication
-from files.models import FileObject
+from files.models import FileObject, FileVersion, FileActionLog
 from sharing.models import FileAccessControl
-from files.models import FileVersion
 import requests
 from urllib.parse import quote
+from django.utils import timezone
 FASTAPI_DOWNLOAD_URL = "http://127.0.0.1:8081/download_file"
 
 class DownloadFileAPIView(APIView):
@@ -40,13 +40,14 @@ class DownloadFileAPIView(APIView):
                 )
 
         # Fetch the first version (version_number = 1) for the given file
-        initial_version = FileVersion.objects.filter(file=file_obj, version_number=1).first()
+        # initial_version = FileVersion.objects.filter(file=file_obj, version_number=1).first()
 
-        if not initial_version:
-            return Response({"error": "Initial version not found."}, status=status.HTTP_404_NOT_FOUND)
+        # if not initial_version:
+        #     return Response({"error": "Initial version not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Retrieve the initial name from metadata_snapshot
-        file_name =initial_version.metadata_snapshot.get("filename")
+        # # Retrieve the initial name from metadata_snapshot
+        # file_name = initial_version.metadata_snapshot.get("filename")
+        file_name = FileVersion.objects.filter(file=file_obj).order_by('version_number').first().initial_filename_snapshot
         file_name = quote(file_name)  # URL encode the file name
         version_id = version_id or file_obj.latest_version_id
 
@@ -72,6 +73,13 @@ class DownloadFileAPIView(APIView):
                     content_type=response.headers.get("Content-Type", "application/octet-stream")
                 )
                 django_response["Content-Disposition"] = f'attachment; filename="{file_name}"'
+                FileActionLog.objects.create(
+                file=file_obj,
+                action="downloaded",
+                performed_by=user,
+                performed_at=timezone.now(),
+                reason="File downloaded via API"
+                )
                 return django_response
             else:
                 return Response(

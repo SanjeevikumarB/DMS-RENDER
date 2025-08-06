@@ -60,13 +60,17 @@ class RenameFileOrFolderAPIView(APIView):
                 "version_id": obj.metadata.get("version_id"),
             })
 
+        latest_version = FileVersion.objects.filter(file=obj).order_by('-version_number').first()
+        initial_filename = latest_version.initial_filename_snapshot if latest_version else obj.name
+
         FileVersion.objects.create(
             file=obj,
             version_number=obj.versions.count() + 1,
             action="rename",
             metadata_snapshot=metadata_snapshot,
             created_by=user,
-            s3_version_id=obj.metadata.get("latest_version_id") if obj.metadata else None
+            s3_version_id=obj.metadata.get("latest_version_id") if obj.metadata else None,
+            initial_filename_snapshot=initial_filename,
         )
 
         return Response({"message": f"{obj.type.title()} renamed successfully."}, status=200)

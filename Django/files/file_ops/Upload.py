@@ -469,6 +469,7 @@ class MultiFileUploadAPIView(APIView):
 
                         latest_version = FileVersion.objects.filter(file=existing_file).order_by('-version_number').first()
                         new_version_number = latest_version.version_number + 1 if latest_version else 2
+                        initial_filename = latest_version.initial_filename_snapshot or existing_file.name
 
                         FileVersion.objects.create(
                             file=existing_file,
@@ -476,7 +477,8 @@ class MultiFileUploadAPIView(APIView):
                             action="upload",
                             metadata_snapshot=metadata,
                             s3_version_id=version_id,
-                            created_by=user
+                            created_by=user,
+                            initial_filename_snapshot=initial_filename,
                         )
 
                         uploaded_files.append({
@@ -508,7 +510,8 @@ class MultiFileUploadAPIView(APIView):
                             action="upload",
                             metadata_snapshot=metadata,
                             s3_version_id=version_id,
-                            created_by=user, 
+                            created_by=user,
+                            initial_filename_snapshot=upload_data.get("filename", file.name), 
                         )
 
                         self.apply_inherited_access(file_obj, user)

@@ -1,5 +1,6 @@
 # files/serializers.py
 from rest_framework import serializers
+from files.models import FileObject, FileVersion, TrashAutoCleanQueue, StarredFile
 from sharing.models import FileAccessControl
 
 class SingleFileUploadData(serializers.Serializer):
@@ -41,3 +42,20 @@ class SharedUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = FileAccessControl
         fields = ("email", "access_level", "granted_by", "inherited")
+
+#for trashed items
+class FileObjectSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FileObject
+        fields = [
+            "uid",
+            "name",
+            "type",
+            "parent",
+            "size",
+            "uploaded_url",
+            "trashed_at",
+            "created_at",
+            "modified_at"
+        ]
+        depth = 1 

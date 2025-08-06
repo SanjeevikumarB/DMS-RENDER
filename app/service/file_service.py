@@ -23,7 +23,7 @@ from app.service.acl_utils import get_file_id_by_filename_and_user, get_user_per
 
 ALLOWED_EXTENSIONS = {
     ".pdf", ".docx", ".csv", ".xlsx",
-    ".jpg", ".jpeg", ".png", ".mp3", ".wav",
+    ".jpg", ".jpeg", ".png", ".mp3", ".wav", ".svg", ".gif",
     ".mp4", ".mkv", ".zip", ".tar", ".gz", ".tgz", ".txt"
 }
 
@@ -32,6 +32,7 @@ INLINE_MIME_TYPES = {
     "image/jpeg",
     "image/png",
     "image/gif",
+    "image/svg+xml",
     "text/plain",
     "text/html",
     "video/mp4"
@@ -55,7 +56,7 @@ def get_folder_by_extension(extension: str) -> str:
     folder_map = {
         ".pdf": "pdfs", ".docx": "documents",
         ".csv": "spreadsheets", ".xlsx": "spreadsheets",
-        ".jpg": "images", ".jpeg": "images", ".png": "images",
+        ".jpg": "images", ".jpeg": "images", ".png": "images", ".svg": "images", ".gif": "images",
         ".mp3": "audio", ".wav": "audio",
         ".mp4": "videos", ".mkv": "videos",
         ".zip": "archives", ".tar": "archives", ".gz": "archives", ".tgz": "archives",

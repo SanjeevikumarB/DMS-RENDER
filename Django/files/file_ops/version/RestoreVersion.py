@@ -38,7 +38,8 @@ class RestoreVersionAPIView(APIView):
             action="restored",
             metadata_snapshot=version_to_restore.metadata_snapshot,
             s3_version_id=version_to_restore.s3_version_id,
-            created_by=user
+            created_by=user,
+            initial_filename_snapshot=version_to_restore.initial_filename_snapshot,
         )
 
         # Extract metadata snapshot

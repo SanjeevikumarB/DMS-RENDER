@@ -18,6 +18,10 @@ from accounts.serializers.user_management import RoleEditRequestListSerializer
 from accounts.serializers.user_management import RoleEditRequestReviewSerializer
 from accounts.models import RoleEditRequest
 from notifications.models import Notification
+from accounts.utils.ratelimit import custom_ratelimit, user_or_ip_key
+from django.utils.decorators import method_decorator
+from accounts.utils.security import check_lockout, record_failed_attempt, reset_failed_attempts
+from accounts.utils.ratelimit import custom_ratelimit, user_or_ip_key
 
 class MeView(APIView):
     permission_classes = [IsAuthenticated]
@@ -32,19 +36,37 @@ class MeView(APIView):
             return Response({"message": "Profile updated successfully."}, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='5/m', block=True), name='dispatch')
 class ChangePasswordView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        ip = request.META.get('REMOTE_ADDR')
+        endpoint = 'change_password'  # ✅ unique identifier for config
+
+        # Check lockout before processing
+        allowed, wait = check_lockout(request.user, ip, endpoint)
+        if not allowed:
+            return Response(
+                {"detail": f"Too many failed attempts. Retry after {wait} seconds."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
         serializer = ChangePasswordSerializer(data=request.data, context={"request": request})
         if serializer.is_valid():
             serializer.save()
             # ✅ Optionally: Invalidate tokens here if you're using token versioning
             request.user.access_token_version += 1
             request.user.save()
+            # ✅ Reset failed attempts after success
+            reset_failed_attempts(request.user, ip, endpoint)
             return Response({"message": "Password changed successfully."}, status=status.HTTP_200_OK)
+        
+        # ✅ Record failure if validation fails (wrong old password)
+        record_failed_attempt(request.user, ip, endpoint)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='3/m', block=True), name='dispatch')
 class PasswordResetRequestOTPView(APIView):
     permission_classes = [AllowAny]
     def post(self, request):
@@ -54,29 +76,59 @@ class PasswordResetRequestOTPView(APIView):
             return Response({"message": "OTP sent to your email."})
         return Response(serializer.errors, status=400)
 
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='5/m', block=True), name='dispatch')
 class PasswordResetVerifyOTPView(APIView):
     permission_classes = [AllowAny]
     def post(self, request):
+        ip = request.META.get('REMOTE_ADDR')
+        endpoint = 'password_reset_verify'
+
+        # Check lockout
+        allowed, wait = check_lockout(None, ip, endpoint)
+        if not allowed:
+            return Response(
+                {"detail": f"Too many failed attempts. Retry after {wait} seconds."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
         serializer = PasswordResetOTPVerifySerializer(data=request.data)
         if serializer.is_valid():
+            reset_failed_attempts(None, ip, endpoint)
             return Response({"message": "OTP verified successfully."})
+        record_failed_attempt(None, ip, endpoint)
         return Response(serializer.errors, status=400)
 
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='5/m', block=True), name='dispatch')
 class PasswordResetConfirmView(APIView):
     permission_classes = [AllowAny]
     def post(self, request):
+        ip = request.META.get('REMOTE_ADDR')
+        endpoint = 'password_reset_confirm'
+        email = request.data.get("email")
+
+        # Check lockout
+        allowed, wait = check_lockout(None, ip, endpoint)
+        if not allowed:
+            return Response(
+                {"detail": f"Too many failed attempts. Retry after {wait} seconds."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
         serializer = PasswordResetConfirmSerializer(data=request.data)
         email = request.data.get("email")  # Capture early for async
         if serializer.is_valid():
             serializer.save()
+            reset_failed_attempts(None, ip, endpoint)
             # ✅ Send success email asynchronously
             send_password_reset_status_email_async(email, success=True)
             return Response({"message": "Password reset successful."})
         # ✅ Send failure email asynchronously
+        record_failed_attempt(None, ip, endpoint)
         if email:
             send_password_reset_status_email_async(email, success=False)
         return Response(serializer.errors, status=400)
 
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='3/m', block=True), name='dispatch')
 class SetPasswordRequestOTPView(APIView):
     permission_classes = [AllowAny]
 
@@ -87,21 +139,47 @@ class SetPasswordRequestOTPView(APIView):
             return Response({"message": "OTP sent to your email."})
         return Response(serializer.errors, status=400)
 
-
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='5/m', block=True), name='dispatch')
 class SetPasswordVerifyOTPView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        ip = request.META.get('REMOTE_ADDR')
+        endpoint = 'password_reset_verify'
+        email = request.data.get("email")
+
+        # Check lockout
+        allowed, wait = check_lockout(None, ip, endpoint)
+        if not allowed:
+            return Response(
+                {"detail": f"Too many failed attempts. Retry after {wait} seconds."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
         serializer = PasswordResetOTPVerifySerializer(data=request.data)
         if serializer.is_valid():
+            reset_failed_attempts(None, ip, endpoint)
             return Response({"message": "OTP verified successfully."})
+        record_failed_attempt(None, ip, endpoint)
         return Response(serializer.errors, status=400)
 
-
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='5/m', block=True), name='dispatch')
 class SetPasswordConfirmView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        ip = request.META.get('REMOTE_ADDR')
+        endpoint = 'password_reset_confirm'
+        email = request.data.get("email")
+
+        # Check lockout
+        allowed, wait = check_lockout(None, ip, endpoint)
+        if not allowed:
+            return Response(
+                {"detail": f"Too many failed attempts. Retry after {wait} seconds."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
         serializer = SetPasswordConfirmSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
@@ -117,6 +195,7 @@ class SetPasswordConfirmView(APIView):
             )
             # ✅ Send success email asynchronously
             send_set_password_status_email_async(user_email, "success")
+            reset_failed_attempts(None, ip, endpoint)
             return Response({"message": "Password set successfully. You can now log in using email/password."})
         
         # ✅ If validation failed, check if email exists to send failure notification
@@ -131,6 +210,7 @@ class SetPasswordConfirmView(APIView):
             )
             # ✅ Send failure email asynchronously
             send_set_password_status_email_async(email, "failed")
+        record_failed_attempt(None, ip, endpoint)
         return Response(serializer.errors, status=400)
 
 class RoleEditRequestCreateView(APIView):
@@ -220,7 +300,7 @@ class RoleEditRequestReviewView(APIView):
             "message": f"Role request {past_tense[action]} successfully.",
             "new_role": requested_group.name if action == "approve" else None
         })
-        
+
 class DeleteRegularUserView(APIView):
     permission_classes = [IsAuthenticated, IsClientAdmin]
 
@@ -254,7 +334,7 @@ class DeleteRegularUserView(APIView):
         user.delete()
 
         return Response({"detail": "User deleted successfully."})
-    
+
 class DeleteClientAdminView(APIView):
     permission_classes = [IsAuthenticated, IsSuperAdmin]
 
@@ -281,7 +361,7 @@ class DeleteClientAdminView(APIView):
         user.delete()
         return Response({"detail": "ClientAdmin deleted successfully."}, status=status.HTTP_200_OK)
 
-
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='3/m', block=True), name='dispatch')
 class DeleteAccountOTPRequestView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -292,22 +372,36 @@ class DeleteAccountOTPRequestView(APIView):
             return Response(response_data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)  
 
-
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='2/m', block=True), name='dispatch')
 class DeleteAccountView(APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request):
+        ip = request.META.get('REMOTE_ADDR')
+        endpoint = 'delete_account'
+        email = request.data.get("email")
+
+        # Check lockout
+        allowed, wait = check_lockout(None, ip, endpoint)
+        if not allowed:
+            return Response(
+                {"detail": f"Too many failed attempts. Retry after {wait} seconds."},
+                status=status.HTTP_403_FORBIDDEN
+            )
         serializer = DeleteAccountSerializer(data=request.data, context={"request": request})
         if serializer.is_valid():
             user = request.user
             user_email = user.email  # Store before deleting
             name = user.username or user_email
-
+            
+            # ✅ Consume OTP if applicable
+            serializer.consume_otp()
+            
             user.delete()
 
             # Send deletion confirmation email asynchronously
             send_account_deleted_email_async(user_email, name)
-
+            reset_failed_attempts(None, ip, endpoint)
             return Response({"message": "Your account has been deleted successfully."}, status=status.HTTP_200_OK)
-
+        record_failed_attempt(None, ip, endpoint)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

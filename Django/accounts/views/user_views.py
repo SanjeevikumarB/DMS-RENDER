@@ -11,7 +11,13 @@ from django.utils import timezone
 from django.contrib.auth.models import Group
 from notifications.models import Notification
 import uuid
+from django_ratelimit.decorators import ratelimit
+from django.utils.decorators import method_decorator
+from accounts.utils.ratelimit import custom_ratelimit, user_or_ip_key
+from accounts.utils.security import check_lockout, record_failed_attempt, reset_failed_attempts
+from django.conf import settings
 
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='3/m', block=True), name='dispatch')
 class RegisterView(APIView):
     permission_classes = [AllowAny]
     
@@ -54,15 +60,32 @@ class RegisterView(APIView):
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='5/m', block=True), name='dispatch')
 class LoginView(APIView):
     permission_classes = [AllowAny]
     
     def post(self, request):
+        ip = request.META.get('REMOTE_ADDR')
+        
+        # ✅ Check lockout
+        allowed, wait = check_lockout(None, ip, 'login')
+        if not allowed:
+            return Response(
+                {"detail": f"Account temporarily locked. Retry after {wait} seconds."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
         serializer = LoginSerializer(data=request.data)
         if serializer.is_valid():
+            user = getattr(serializer, 'user', None)
+            reset_failed_attempts(user, ip, 'login')
             return Response(serializer.validated_data, status=status.HTTP_200_OK)
+        
+        # ✅ Record failed attempt
+        record_failed_attempt(None, ip, 'login')
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='10/m', block=True), name='dispatch')
 class RefreshTokenView(APIView):
     permission_classes = [AllowAny]
     
@@ -105,6 +128,7 @@ class AccessTokenVerifyView(APIView):
             "email": user.email
         }, status=200)
         
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='15/m', block=True), name='dispatch')
 class LogoutView(APIView):
     permission_classes = [AllowAny]
     

@@ -14,9 +14,11 @@ from accounts.serializers.admin import CreateUserSerializer
 from accounts.serializers.admin import CreateClientAdminSerializer
 from accounts.serializers.admin import JoinRequestSerializer
 from accounts.serializers.admin import JoinRequestReviewSerializer
-
+from accounts.utils.ratelimit import custom_ratelimit, user_or_ip_key
+from django.utils.decorators import method_decorator
 from notifications.models import Notification
 
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='10/m', block=True), name='dispatch')
 class CreateUserByAdminView(APIView):
     permission_classes = [IsAuthenticated, IsClientAdmin]
 
@@ -36,6 +38,7 @@ class CreateUserByAdminView(APIView):
             return Response({"message": "User created successfully", "uid": user.uid}, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='3/m', block=True), name='dispatch')
 class CreateClientAdminView(APIView):
     permission_classes = [IsAuthenticated, IsClientAdmin | IsSuperAdmin]
 
@@ -58,11 +61,13 @@ class CreateClientAdminView(APIView):
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='30/m', block=True), name='dispatch')
 class JoinRequestListView(ListAPIView):
     queryset = JoinRequest.objects.filter(status='pending').select_related('user')
     serializer_class = JoinRequestSerializer
     permission_classes = [IsAuthenticated, IsClientAdmin | IsSuperAdmin]
     
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='10/m', block=True), name='dispatch')
 class JoinRequestReviewView(APIView):
     permission_classes = [IsAuthenticated, IsClientAdmin | IsSuperAdmin]
 

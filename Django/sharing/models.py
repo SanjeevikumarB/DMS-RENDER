@@ -20,6 +20,10 @@ class FileShareRequest(models.Model):
     uid = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     file = models.ForeignKey(FileObject, on_delete=models.CASCADE)
     requester = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='share_requests')
+    target_user = models.ForeignKey(
+        CustomUser, on_delete=models.CASCADE,
+        related_name='incoming_share_requests', null=True, blank=True
+    )
     access_type = models.CharField(max_length=20, choices=[("viewer", "Viewer"), ("editor", "Editor")])
     status = models.CharField(max_length=20, choices=[("pending", "Pending"), ("approved", "Approved"), ("rejected", "Rejected")])
     reason = models.TextField(blank=True, null=True)

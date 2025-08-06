@@ -1,27 +1,27 @@
-# utils/jwe_utils.py
+from jwcrypto import jwk, jwe
 import json
-from jose import jwe
+import base64
 from django.conf import settings
 
-# JWE uses compact serialization and AES GCM for encryption
-JWE_ALG = "dir"              # direct encryption using a shared symmetric key
-JWE_ENC = "A256GCM"          # AES-GCM using 256-bit key
+def _get_secret_key():
+    key_bytes = base64.urlsafe_b64decode(settings.JWE_SECRET_KEY)
+    if len(key_bytes) != 32:
+        raise ValueError("JWE_SECRET_KEY must decode to 32 bytes.")
+    return jwk.JWK(kty='oct', k=base64.urlsafe_b64encode(key_bytes).decode())
 
 def encrypt_jwe(payload: dict) -> str:
-    """
-    Encrypts the given payload dictionary into a JWE string.
-    """
-    secret_key = settings.JWE_SECRET_KEY.encode()
-    json_payload = json.dumps(payload).encode()
-    token = jwe.encrypt(json_payload, secret_key, algorithm=JWE_ALG, encryption=JWE_ENC)
-    return token.decode()
+    key = _get_secret_key()
+    plaintext = json.dumps(payload)
+    protected_header = {
+        "alg": "dir",
+        "enc": "A256GCM"
+    }
+    token = jwe.JWE(plaintext.encode(), protected=protected_header)
+    token.add_recipient(key)
+    return token.serialize(compact=True)
 
 def decrypt_jwe(token: str) -> dict:
-    """
-    Decrypts the given JWE token back to a dictionary payload.
-    Raises exception if token is invalid or expired.
-    """
-    secret_key = settings.JWE_SECRET_KEY.encode()
-    decrypted = jwe.decrypt(token.encode(), secret_key)
-    payload = json.loads(decrypted.decode())
-    return payload
+    key = _get_secret_key()
+    decrypted = jwe.JWE()
+    decrypted.deserialize(token, key=key)
+    return json.loads(decrypted.payload)

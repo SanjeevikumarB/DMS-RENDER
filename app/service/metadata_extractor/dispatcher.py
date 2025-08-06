@@ -14,7 +14,7 @@ def extract_metadata(file_path: str):
     ext = os.path.splitext(file_path)[1].lower()
     if ext == ".pdf":
         return extract_pdf_metadata(file_path)
-    elif ext in [".jpg", ".jpeg", ".png"]:
+    elif ext in [".jpg", ".jpeg", ".png", ".svg", ".gif"]:
         return extract_image_metadata(file_path)
     elif ext in [".csv", ".xlsx"]:
         return extract_excel_or_csv_metadata(file_path)

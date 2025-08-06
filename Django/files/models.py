@@ -43,6 +43,7 @@ class FileVersion(models.Model):
     created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
     storage_class = models.CharField(max_length=50, default="STANDARD")
     restore_status = models.CharField(max_length=20, default="available")
+    initial_filename_snapshot = models.CharField(max_length=255, blank=True, null=True)
  
     class Meta:
         indexes = [
@@ -68,3 +69,28 @@ class StarredFile(models.Model):
         unique_together = ('user', 'file')  
         ordering = ['-starred_at']          
  
+class FileActionLog(models.Model):
+    ACTION_CHOICES = [
+        ("trashed", "Trashed"),
+        ("restored", "Restored"),
+        ("deleted", "Permanently deleted"),
+        ("created", "Created"),
+        ("modified", "Modified"),
+        ("shared", "Shared"),
+        ("unshared", "Unshared"),
+        # We can expand this list as needed
+    ]
+    uid = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    file = models.ForeignKey(FileObject, on_delete=models.CASCADE)
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    performed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
+    performed_at = models.DateTimeField(auto_now_add=True)
+    reason = models.TextField(blank=True)
+    detail = models.JSONField(null=True, blank=True)  # To save extra structured info if needed
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["file", "performed_at"]),
+            models.Index(fields=["performed_by", "performed_at"]),
+        ]
+        ordering = ['-performed_at']

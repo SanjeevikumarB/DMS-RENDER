@@ -58,8 +58,9 @@ class SaveAsCopyAPIView(APIView):
             return Response({"error": "Specified version not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Default new filename if not specified
-        initial_version = FileVersion.objects.filter(file=file_obj, version_number=1).first()
-        original_filename = initial_version.metadata_snapshot.get("filename")
+        # initial_version = FileVersion.objects.filter(file=file_obj, version_number=1).first()
+        # original_filename = initial_version.metadata_snapshot.get("filename")
+        original_filename = version.initial_filename_snapshot or file_obj.name
         name, extension = original_filename.rsplit('.', 1) if '.' in original_filename else (original_filename, None)
         upload_filename = new_name or f"{name} (copy).{extension}"
 
@@ -168,7 +169,8 @@ class SaveAsCopyAPIView(APIView):
                 action="duplicate",
                 metadata_snapshot=metadata_snapshot,
                 s3_version_id=new_version_id,
-                created_by=user
+                created_by=user,
+                initial_filename_snapshot=upload_filename
             )
 
             # Copy over access controls (ACLs) from original file

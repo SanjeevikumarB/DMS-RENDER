@@ -12,7 +12,6 @@ from accounts.serializers.notifications import NotificationSerializer
 from accounts.permissions import IsRegularUser
 from accounts.permissions import IsClientAdmin
 
-
 class NotificationListView(APIView):
     permission_classes = [IsAuthenticated, IsClientAdmin | IsRegularUser]
 

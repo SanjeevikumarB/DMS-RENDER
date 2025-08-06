@@ -59,6 +59,7 @@ class PasswordResetOTP(models.Model):
     otp = models.CharField(max_length=6)
     created_at = models.DateTimeField(auto_now_add=True)
     is_verified = models.BooleanField(default=False)
+    consumed = models.BooleanField(default=False)  # ✅ NEW: Marks OTP as fully used
     
     class Meta:
         ordering = ['-created_at']
@@ -85,6 +86,21 @@ class UserSessions(models.Model):
     expires_at = models.DateTimeField()
     is_active = models.BooleanField(default=True)
     
+class AuthSecurityLog(models.Model):
+    uid = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey('accounts.CustomUser', null=True, blank=True, on_delete=models.CASCADE)
+    ip_address = models.GenericIPAddressField()
+    endpoint = models.CharField(max_length=100)  # e.g., 'login', 'password_reset'
+    failed_attempts = models.PositiveIntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
+    last_attempt_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'endpoint']),
+            models.Index(fields=['ip_address', 'endpoint']),
+        ]
+        
 class RoleEditRequest(models.Model):
     uid = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='role_requests')

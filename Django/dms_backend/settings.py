@@ -52,12 +52,16 @@ MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'django_ratelimit.middleware.RatelimitMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+# When rate limit is exceeded, this view will be used
+RATELIMIT_VIEW = 'accounts.utils.ratelimit'
 
 ROOT_URLCONF = 'dms_backend.urls'
 
@@ -92,6 +96,13 @@ DATABASES = {
         'PORT': config('DB_PORT'),
     }
 }
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+        'LOCATION': 'dms_cache_table',
+    }
+}
+
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
@@ -145,6 +156,41 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',  # ✅ Default requires login
     ]
 }
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+        'LOCATION': 'dms_cache_table',
+    }
+}
+
+AUTH_SECURITY = {
+    'login': {
+        'FAILED_ATTEMPTS_THRESHOLD': 5,  # 5 wrong attempts
+        'LOCKOUT_DURATION_MINUTES': 15   # lock for 15 mins
+    },
+    'password_reset_verify': {
+        'FAILED_ATTEMPTS_THRESHOLD': 3,
+        'LOCKOUT_DURATION_MINUTES': 15
+    },
+    'password_reset_confirm': {
+        'FAILED_ATTEMPTS_THRESHOLD': 3,
+        'LOCKOUT_DURATION_MINUTES': 30
+    },
+    'delete_account_otp': {
+        'FAILED_ATTEMPTS_THRESHOLD': 3,
+        'LOCKOUT_DURATION_MINUTES': 30
+    },
+    'delete_account': {
+        'FAILED_ATTEMPTS_THRESHOLD': 3,
+        'LOCKOUT_DURATION_MINUTES': 60
+    },
+    'change_password': {
+        'FAILED_ATTEMPTS_THRESHOLD': 3,
+        'LOCKOUT_DURATION_MINUTES': 15
+    }
+}
+
 
 # CORS_ALLOW_ALL_ORIGINS = True  # for dev only!
 # OR more securely:

@@ -7,12 +7,14 @@ from rest_framework.permissions import AllowAny
 from django.utils.timezone import now
 from accounts.models import CustomUser, JoinRequest, UserSessions
 from accounts.utils.token_utils import create_access_token, create_refresh_token
+from accounts.utils.ratelimit import custom_ratelimit, user_or_ip_key
+from django.utils.decorators import method_decorator
 import uuid
 
-
+@method_decorator(custom_ratelimit(key_func=user_or_ip_key, rate='5/m', block=True), name='dispatch')
 class GoogleOAuthView(APIView):
     permission_classes = [AllowAny]
-
+    
     def post(self, request):
         # code = request.data.get("code")  # For production (React Native)
         google_access_token = request.data.get("google_access_token")  # For Postman testing
@@ -32,7 +34,7 @@ class GoogleOAuthView(APIView):
 
         #     if "access_token" not in token_json:
         #         return Response({"error": "Failed to get token", "details": token_json}, status=400)
-
+              
         #     google_access_token = token_json["access_token"]
 
         # ✅ Method 2: If token provided (Postman)

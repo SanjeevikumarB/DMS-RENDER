@@ -95,13 +95,15 @@ class PasswordResetOTPVerifySerializer(serializers.Serializer):
             record = PasswordResetOTP.objects.filter(
                 user=user,
                 otp=data["otp"],
-                is_verified=False
             ).latest("created_at")
         except PasswordResetOTP.DoesNotExist:
             raise serializers.ValidationError("Invalid OTP.")
 
         if record.is_expired():
             raise serializers.ValidationError("OTP has expired.")
+        
+        if record.is_verified:
+            raise serializers.ValidationError("OTP already verified.")
         
         # Mark OTP as verified
         record.is_verified = True
@@ -127,7 +129,8 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
 
         record = PasswordResetOTP.objects.filter(
             user=user,
-            is_verified=True
+            is_verified=True,
+            consumed=False
         ).order_by("-created_at").first()
 
         if not record:
@@ -136,13 +139,17 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         if record.is_expired():
             raise serializers.ValidationError("OTP has expired.")
 
+        self.record = record
         return data
 
     def save(self):
         self.user.set_password(self.validated_data["new_password"])
         self.user.save()
-        # ✅ Invalidate all verified OTPs for this user (one-time use)
-        PasswordResetOTP.objects.filter(user=self.user, is_verified=True).update(is_verified=False)
+        
+        # ✅ Consume the OTP (so it cannot be reused)
+        self.record.consumed = True
+        self.record.save()
+        
 class SetPasswordOTPRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
@@ -201,24 +208,28 @@ class SetPasswordConfirmSerializer(serializers.Serializer):
         if self.user.password not in [None, ""] and self.user.has_usable_password():
             raise serializers.ValidationError("Password already set for this account.")
 
-        # Ensure OTP is verified
+        # Check latest verified and unused OTP
         record = PasswordResetOTP.objects.filter(
             user=user,
-            is_verified=True
+            is_verified=True,
+            consumed=False
         ).order_by("-created_at").first()
 
         if not record:
-            raise serializers.ValidationError("OTP not verified yet.")
+            raise serializers.ValidationError("OTP not verified yet or already used.")
 
         if record.is_expired():
             raise serializers.ValidationError("OTP has expired.")
-
+        
+        self.record = record
         return data
 
     def save(self):
         self.user.set_password(self.validated_data["new_password"])
         self.user.save()
-
+        # ✅ Mark OTP as consumed (one-time use)
+        self.record.consumed = True
+        self.record.save()
 
 class RoleEditRequestCreateSerializer(serializers.ModelSerializer):
     requested_role = serializers.SlugRelatedField(
@@ -314,12 +325,21 @@ class DeleteAccountSerializer(serializers.Serializer):
             if not otp:
                 raise serializers.ValidationError({"otp": "OTP is required for OTP method."})
 
-            record = PasswordResetOTP.objects.filter(user=user, otp=otp).order_by("-created_at").first()
+            record = PasswordResetOTP.objects.filter(
+                user=user,
+                otp=otp,
+                consumed=False
+            ).order_by("-created_at").first()
             if not record or record.is_expired():
                 raise serializers.ValidationError({"otp": "Invalid or expired OTP."})
-
-            # ✅ Mark OTP as verified
             record.is_verified = True
-            record.save()
+            # ✅ Store OTP record for later consumption
+            self.record = record
 
         return data
+
+    def consume_otp(self):
+        """Mark OTP as consumed after account deletion"""
+        if hasattr(self, "record"):
+            self.record.consumed = True
+            self.record.save()

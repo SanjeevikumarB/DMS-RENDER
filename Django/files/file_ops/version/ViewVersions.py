@@ -29,6 +29,7 @@ class ListFilesVersionView(APIView):
                 "action": version.action,
                 "created_at": version.created_at,
                 "metadata": version.metadata_snapshot,
+                "initial_filename": version.initial_filename_snapshot,
             }
             for version in versions
         ]

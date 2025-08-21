@@ -9,8 +9,15 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 S3_UPLOAD_FOLDER = os.getenv("S3_UPLOAD_FOLDER", "uploads/")
 CDN_DOMAIN = os.getenv("CDN_DOMAIN")
-AWS_REGION = os.getenv("AWS_REGION")
+AWS_REGION = os.getenv("AWS_REGION", "eu-north-1")
 
-# app/core/config.py
-DATABASE_URL = os.getenv("DATABASE_URL")
-POSTGRES_DB_URL = os.getenv("POSTGRES_DB_URL")
+# Django service configuration
+DJANGO_BASE_URL = os.getenv("DJANGO_BASE_URL", "http://localhost:8000/api")
+
+# Lambda configuration
+LAMBDA_FUNCTION_NAME = os.getenv("LAMBDA_FUNCTION_NAME", "dms-metadata-extractor")
+AWS_ACCOUNT_ID = os.getenv("AWS_ACCOUNT_ID")
+
+# FastAPI configuration
+DEBUG = os.getenv("DEBUG", "False").lower() == "true"
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
